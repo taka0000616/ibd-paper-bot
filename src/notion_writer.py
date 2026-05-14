@@ -77,7 +77,7 @@ def _build_properties(paper: Dict, summary: Dict) -> Dict:
         "PMID": {
             "rich_text": [{"text": {"content": paper["pmid"]}}],
         },
-        "URL": {"url": paper["pubmed_url"]},
+        "PubMed URL": {"url": paper["pubmed_url"]},
         "Authors": {
             "rich_text": [{"text": {"content": paper["authors"][:2000]}}],
         },
