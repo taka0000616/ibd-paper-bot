@@ -40,7 +40,7 @@ git push -u origin main
 | Secret名 | 値 |
 |---|---|
 | `NOTION_TOKEN` | Notion Integration token (`secret_...`) |
-| `NOTION_DATABASE_ID` | `a65693b6-4d0d-4050-8713-8300ee4a7fba` (統合論文DBのDatabase ID) |
+| `NOTION_DATABASE_ID` |  (統合論文DBのDatabase ID) |
 | `ANTHROPIC_API_KEY` | Anthropic API key (`sk-ant-...`) |
 | `PUBMED_EMAIL` | NCBIに登録したメールアドレス |
 | `PUBMED_API_KEY` | (任意) NCBI API key |
