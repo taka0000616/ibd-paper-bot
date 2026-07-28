@@ -16,7 +16,7 @@ NOTION_VERSION = "2022-06-28"
 # Claude API設定
 # ============================================================
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
-CLAUDE_MODEL = "claude-sonnet-4-5"
+CLAUDE_MODEL = "claude-sonnet-4-6"
 CLAUDE_MAX_TOKENS = 2000
 
 # ============================================================
