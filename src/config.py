@@ -26,7 +26,7 @@ PUBMED_EMAIL = os.environ.get("PUBMED_EMAIL", "your-email@example.com")
 PUBMED_API_KEY = os.environ.get("PUBMED_API_KEY", "")  # 任意。あれば3req/sec→10req/sec
 
 # --- 検索範囲 ---
-PUBMED_RELDATE_DAYS = 730  # 過去2年以内
+PUBMED_RELDATE_DAYS = 1825  # 過去2年以内
 
 # --- 検索クエリ: IBD + 関連領域 ---
 # Publication Type フィルタで信頼度の高い研究デザインに限定
