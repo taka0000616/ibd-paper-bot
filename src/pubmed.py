@@ -30,7 +30,7 @@ def search_recent_papers() -> List[str]:
         reldate=config.PUBMED_RELDATE_DAYS,
         datetype="pdat",  # publication date
         retmode="json",
-        retmax=500,  # 検索段階では多めに取得、後段でフィルタ
+        retmax=5000,  # 検索段階では多めに取得、後段でフィルタ
         sort="pub_date",
     )
 
