@@ -30,7 +30,7 @@ def search_recent_papers() -> List[str]:
         reldate=config.PUBMED_RELDATE_DAYS,
         datetype="pdat",  # publication date
         retmode="json",
-        retmax=1500,  # 検索段階では多めに取得、後段でフィルタ
+        retmax=500,  # 検索段階では多めに取得、後段でフィルタ
         sort="pub_date",
     )
 
@@ -43,27 +43,59 @@ def search_recent_papers() -> List[str]:
     return pmids
 
 
-def fetch_paper_details(pmids: List[str]) -> List[Dict]:
-    """PMIDリストから論文詳細を取得(200件ずつバッチ処理)"""
+def fetch_paper_details(pmids: List[str], max_retries: int = 3) -> List[Dict]:
+    """PMIDリストから論文詳細を取得(200件ずつバッチ処理)
+
+    NCBIのefetchは大量バッチを連続取得すると、稀に接続を途中で切る
+    ("Response ended prematurely" 等)。以下で堅牢化する:
+      - 各バッチをmax_retries回までリトライ(指数バックオフ)
+      - それでも失敗したバッチは全体を落とさずスキップして続行
+        (1バッチの失敗でrun全体が[FATAL]で止まるのを防ぐ)
+    """
     if not pmids:
         return []
 
     BATCH_SIZE = 200
     all_papers = []
+    failed_batches = 0
 
     for i in range(0, len(pmids), BATCH_SIZE):
         batch = pmids[i : i + BATCH_SIZE]
+        batch_no = i // BATCH_SIZE + 1
         params = _build_params(
             db="pubmed",
             id=",".join(batch),
             retmode="xml",
         )
 
-        resp = requests.post(f"{BASE_URL}/efetch.fcgi", data=params, timeout=120)
-        resp.raise_for_status()
-        batch_papers = _parse_efetch_xml(resp.text)
+        batch_papers = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                resp = requests.post(f"{BASE_URL}/efetch.fcgi", data=params, timeout=120)
+                resp.raise_for_status()
+                batch_papers = _parse_efetch_xml(resp.text)
+                break
+            except Exception as e:  # noqa: BLE001
+                wait = 2 ** attempt  # 2, 4, 8 秒
+                print(f"  [PubMed] Batch {batch_no} attempt {attempt}/{max_retries} "
+                      f"failed: {e}")
+                if attempt < max_retries:
+                    time.sleep(wait)
+
+        if batch_papers is None:
+            # このバッチは諦めてスキップ(全体は継続)
+            failed_batches += 1
+            print(f"  [PubMed] Batch {batch_no}: skipped after {max_retries} retries")
+            continue
+
         all_papers.extend(batch_papers)
-        print(f"  [PubMed] Batch {i // BATCH_SIZE + 1}: fetched {len(batch_papers)} papers")
+        print(f"  [PubMed] Batch {batch_no}: fetched {len(batch_papers)} papers")
+        # バッチ間に短い間隔を置き、連続アクセスによる切断を減らす
+        time.sleep(0.4)
+
+    if failed_batches:
+        print(f"  [PubMed] {failed_batches} batch(es) skipped due to repeated errors; "
+              f"continuing with {len(all_papers)} papers")
 
     return all_papers
 
@@ -120,12 +152,16 @@ def _extract_paper_data(article: ET.Element) -> Optional[Dict]:
     # 著者(第一著者と責任著者)
     authors = _extract_authors(article)
 
-    # DOI
+    # DOI / PMCID
     doi = ""
+    pmcid = ""
     for id_elem in article.findall(".//ArticleId"):
-        if id_elem.get("IdType") == "doi":
+        id_type = id_elem.get("IdType")
+        if id_type == "doi":
             doi = id_elem.text or ""
-            break
+        elif id_type == "pmc":
+            # 例: "PMC1234567"
+            pmcid = (id_elem.text or "").strip()
 
     return {
         "pmid": pmid,
@@ -137,7 +173,10 @@ def _extract_paper_data(article: ET.Element) -> Optional[Dict]:
         "pub_types": pub_types,
         "authors": authors,
         "doi": doi,
+        "pmcid": pmcid,
+        "has_pmc": bool(pmcid),
         "pubmed_url": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
+        "pmc_url": f"https://www.ncbi.nlm.nih.gov/pmc/articles/{pmcid}/" if pmcid else "",
     }
 
 
