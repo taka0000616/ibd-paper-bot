@@ -18,6 +18,8 @@ NOTION_VERSION = "2022-06-28"
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 CLAUDE_MODEL = "claude-sonnet-4-6"
 CLAUDE_MAX_TOKENS = 2000
+# 全文ベースで要約する場合はより長い出力を許可
+CLAUDE_MAX_TOKENS_FULLTEXT = 3500
 
 # ============================================================
 # PubMed設定
@@ -26,7 +28,7 @@ PUBMED_EMAIL = os.environ.get("PUBMED_EMAIL", "your-email@example.com")
 PUBMED_API_KEY = os.environ.get("PUBMED_API_KEY", "")  # 任意。あれば3req/sec→10req/sec
 
 # --- 検索範囲 ---
-PUBMED_RELDATE_DAYS = 1825  # 過去2年以内
+PUBMED_RELDATE_DAYS = 1825  # 過去5年以内
 
 # --- 検索クエリ: IBD + 関連領域 ---
 # Publication Type フィルタで信頼度の高い研究デザインに限定
@@ -118,6 +120,27 @@ JOURNAL_WHITELIST = {
 
 # IFスコア閾値: これ未満のジャーナルはスキップ
 MIN_IF_THRESHOLD = 3.0
+
+# ============================================================
+# 全文(PMC フルテキスト)設定
+# ============================================================
+# PMC無料全文(Open Accessサブセット)が取得できる論文を優先し、
+# 全文があれば全文ベースで詳細要約、無ければabstractで要約する。
+
+# 全文が取得できた論文は、ジャーナルホワイトリスト/IF閾値の足切りを免除する
+# (= 全文要件でフィルタを緩和し、網羅性を上げる)
+FULLTEXT_RELAX_FILTER = True
+
+# 全文があるものだけを投稿対象にする(True)か、abstractのみの論文も許容する(False)
+# 「全文優先・abstract補完」方針 → False
+FULLTEXT_ONLY = False
+
+# 並べ替え時、全文ありの論文に加算するスコアボーナス
+FULLTEXT_SCORE_BONUS = 8.0
+
+# Claudeに渡す全文の最大文字数(トークン・コスト対策)
+# References/図表キャプションを除いた本文をこの長さで打ち切る
+FULLTEXT_MAX_CHARS = 24000
 
 # Importance判定にAIを使うか
 USE_AI_IMPORTANCE_JUDGMENT = True
