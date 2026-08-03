@@ -30,6 +30,11 @@ PUBMED_API_KEY = os.environ.get("PUBMED_API_KEY", "")  # 任意。あれば3req/
 # --- 検索範囲 ---
 PUBMED_RELDATE_DAYS = 1825  # 過去5年以内
 
+# esearchの取得上限。sort=pub_date(新しい順)のため、この値が小さいと
+# 期間を広げても「最新N件」しか拾えない(古い論文が取得対象から漏れる)。
+# 5年分(数千件)を確実に渉猟するため大きめに設定。NCBIのesearch上限は10000。
+PUBMED_RETMAX = 5000
+
 # --- 検索クエリ: IBD + 関連領域 ---
 # Publication Type フィルタで信頼度の高い研究デザインに限定
 PUBMED_QUERY = """(
