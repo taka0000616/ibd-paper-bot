@@ -30,7 +30,7 @@ def search_recent_papers() -> List[str]:
         reldate=config.PUBMED_RELDATE_DAYS,
         datetype="pdat",  # publication date
         retmode="json",
-        retmax=500,  # 検索段階では多めに取得、後段でフィルタ
+        retmax=config.PUBMED_RETMAX,  # 5年分を確実に取得(config集約)。sort=pub_dateなので小さいと最新分しか拾えない
         sort="pub_date",
     )
 
