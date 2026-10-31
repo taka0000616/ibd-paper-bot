@@ -11,6 +11,17 @@ import config
 
 NOTION_API = "https://api.notion.com/v1"
 
+# Notion APIの制約: rich_text要素1つあたり2000字、1プロパティ/ブロックあたり100要素
+_RICH_TEXT_CHUNK = 2000
+_RICH_TEXT_MAX_ITEMS = 100
+
+
+def _rich_text(text: str) -> List[Dict]:
+    """長文を2000字ごとのrich_text要素に分割する(切り捨てによる情報欠落を防ぐ)"""
+    text = text or ""
+    chunks = [text[i:i + _RICH_TEXT_CHUNK] for i in range(0, len(text), _RICH_TEXT_CHUNK)]
+    return [{"type": "text", "text": {"content": c}} for c in chunks[:_RICH_TEXT_MAX_ITEMS]]
+
 HEADERS = {
     "Authorization": f"Bearer {config.NOTION_TOKEN}",
     "Notion-Version": config.NOTION_VERSION,
@@ -114,24 +125,24 @@ def _build_properties(paper: Dict, summary: Dict) -> Dict:
 
     props = {
         "Title": {
-            "title": [{"text": {"content": paper["title"][:2000]}}],
+            "title": _rich_text(paper["title"]),
         },
         "Title (JP)": {
-            "rich_text": [{"text": {"content": summary.get("title_jp", "")[:2000]}}],
+            "rich_text": _rich_text(summary.get("title_jp", "")),
         },
         "PMID": {
             "rich_text": [{"text": {"content": paper["pmid"]}}],
         },
         "PubMed URL": {"url": paper["pubmed_url"]},
         "Authors": {
-            "rich_text": [{"text": {"content": paper["authors"][:2000]}}],
+            "rich_text": _rich_text(paper["authors"]),
         },
         "Source Bot": {"select": {"name": "IBD summary bot"}},
         "AI Summary": {
-            "rich_text": [{"text": {"content": summary.get("ai_summary", "")[:2000]}}],
+            "rich_text": _rich_text(summary.get("ai_summary", "")),
         },
         "Key Findings": {
-            "rich_text": [{"text": {"content": summary.get("key_findings", "")[:2000]}}],
+            "rich_text": _rich_text(summary.get("key_findings", "")),
         },
         "Importance": {"select": {"name": summary.get("importance", "★")}},
         "Journal": {"select": {"name": map_journal_to_select(paper["journal_iso"])}},
@@ -172,7 +183,7 @@ def _build_page_content(paper: Dict, summary: Dict) -> List[Dict]:
 
     レイアウト:
     1. Importance callout (黄/灰のcallout)
-    2. AI Summary (100字の結論サマリ、青のcallout)
+    2. AI Summary (120字程度の結論サマリ、青のcallout)
     3. Key Findings (背景/方法/結果/結論/臨床的解釈 をセクション別に表示)
     4. Original Abstract (折りたたみ)
     5. PubMedリンク
@@ -195,7 +206,7 @@ def _build_page_content(paper: Dict, summary: Dict) -> List[Dict]:
         },
     })
 
-    # 2. AI Summary (100字の結論)
+    # 2. AI Summary (120字程度の結論)
     ai_summary_text = summary.get("ai_summary", "")
     if ai_summary_text:
         blocks.append({
@@ -227,9 +238,7 @@ def _build_page_content(paper: Dict, summary: Dict) -> List[Dict]:
             "type": "toggle",
             "toggle": {
                 "rich_text": [{"type": "text", "text": {"content": "Original Abstract"}}],
-                "children": [
-                    _paragraph_block(paper["abstract"][:2000])
-                ],
+                "children": [_paragraph_block(paper["abstract"])],
             },
         })
 
@@ -252,13 +261,11 @@ def _build_page_content(paper: Dict, summary: Dict) -> List[Dict]:
 
 
 def _paragraph_block(text: str) -> Dict:
-    """テキストを段落ブロックに変換。Notionの2000文字制限に対応"""
+    """テキストを段落ブロックに変換。2000字を超える場合はrich_text要素を分割して全文を保持"""
     return {
         "object": "block",
         "type": "paragraph",
-        "paragraph": {
-            "rich_text": [{"type": "text", "text": {"content": text[:2000]}}],
-        },
+        "paragraph": {"rich_text": _rich_text(text)},
     }
 
 

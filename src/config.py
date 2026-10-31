@@ -17,9 +17,9 @@ NOTION_VERSION = "2022-06-28"
 # ============================================================
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 CLAUDE_MODEL = "claude-sonnet-4-6"
-CLAUDE_MAX_TOKENS = 2000
+CLAUDE_MAX_TOKENS = 4000
 # 全文ベースで要約する場合はより長い出力を許可
-CLAUDE_MAX_TOKENS_FULLTEXT = 3500
+CLAUDE_MAX_TOKENS_FULLTEXT = 8000
 
 # ============================================================
 # PubMed設定
@@ -145,7 +145,7 @@ FULLTEXT_SCORE_BONUS = 8.0
 
 # Claudeに渡す全文の最大文字数(トークン・コスト対策)
 # References/図表キャプションを除いた本文をこの長さで打ち切る
-FULLTEXT_MAX_CHARS = 24000
+FULLTEXT_MAX_CHARS = 60000
 
 # Importance判定にAIを使うか
 USE_AI_IMPORTANCE_JUDGMENT = True

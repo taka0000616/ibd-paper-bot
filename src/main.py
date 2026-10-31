@@ -103,6 +103,12 @@ def main():
 
             # AI要約
             print(f"[SUMMARIZE] [{stats['examined']:>3}] PMID {pmid} (score {paper['score']:.1f}): {title_short}")
+            # PMC全文が取れれば全文ベースで要約(取れなければabstractのみ)
+            ft = pubmed.fetch_full_text(paper.get("pmcid", ""))
+            if ft:
+                paper.update(ft, has_full_text=True)
+                print(f"  → full text {len(ft['full_text'])} chars"
+                      f"{' (truncated)' if ft['full_text_truncated'] else ''}")
             summary = ai_summarize.summarize_paper(paper)
             if summary is None:
                 print(f"  → summarize failed, skip")

@@ -155,7 +155,9 @@ def _extract_paper_data(article: ET.Element) -> Optional[Dict]:
     # DOI / PMCID
     doi = ""
     pmcid = ""
-    for id_elem in article.findall(".//ArticleId"):
+    # 本論文自身のIDのみ参照する(".//ArticleId" だと ReferenceList 内の
+    # 引用文献のDOI/PMCIDまで拾い、最後に出現した引用文献の値で上書きされる)
+    for id_elem in article.findall("./PubmedData/ArticleIdList/ArticleId"):
         id_type = id_elem.get("IdType")
         if id_type == "doi":
             doi = id_elem.text or ""
@@ -233,3 +235,58 @@ def _extract_authors(article: ET.Element) -> str:
         return first
     last = format_author(authors_list[-1])
     return f"{first} ... {last}" if len(authors_list) > 2 else f"{first}, {last}"
+
+
+# 本文から除外するセクション(引用文献・謝辞・利益相反など、要約に不要な部分)
+_SKIP_SECTION_TITLES = (
+    "reference", "acknowledg", "funding", "conflict", "competing interest",
+    "author contribution", "data availability", "supplementary",
+)
+
+
+def fetch_full_text(pmcid: str) -> Optional[Dict]:
+    """PMCから本文を取得し、図表・引用文献を除いたプレーンテキストを返す。
+
+    取得できない場合(非OA、本文なし、通信エラー)は None。
+    戻り値: {"full_text": str, "full_text_truncated": bool}
+    """
+    if not pmcid:
+        return None
+    try:
+        resp = requests.get(
+            f"{BASE_URL}/efetch.fcgi",
+            params=_build_params(db="pmc", id=pmcid, retmode="xml"),
+            timeout=60,
+        )
+        resp.raise_for_status()
+        root = ET.fromstring(resp.content)
+    except Exception as e:  # noqa: BLE001
+        print(f"  [PMC] full text fetch failed for {pmcid}: {e}")
+        return None
+
+    body = root.find(".//article/body")
+    if body is None:
+        return None
+
+    parts: List[str] = []
+    for sec in body.findall("./sec") or [body]:
+        title = (sec.findtext("title") or "").strip()
+        if any(k in title.lower() for k in _SKIP_SECTION_TITLES):
+            continue
+        # 図表・数式・引用番号は要約の妨げになるので除去
+        for tag in ("table-wrap", "fig", "disp-formula", "xref"):
+            for el in sec.iter(tag):
+                el.clear()
+        text = " ".join(" ".join(sec.itertext()).split())
+        if text:
+            parts.append(text)
+
+    full_text = "\n\n".join(parts)
+    if len(full_text) < 1000:  # 本文が実質的に無い(abstractのみ等)
+        return None
+
+    truncated = len(full_text) > config.FULLTEXT_MAX_CHARS
+    return {
+        "full_text": full_text[:config.FULLTEXT_MAX_CHARS],
+        "full_text_truncated": truncated,
+    }
