@@ -147,9 +147,25 @@ FULLTEXT_ONLY = False
 # 並べ替え時、全文ありの論文に加算するスコアボーナス
 FULLTEXT_SCORE_BONUS = 8.0
 
-# Claudeに渡す全文の最大文字数(トークン・コスト対策)
-# References/図表キャプションを除いた本文をこの長さで打ち切る
-FULLTEXT_MAX_CHARS = 60000
+# Claudeに渡す全文の最大文字数。
+# 実測(除去後の本文7本)では 16.9k〜27.0k文字・中央値 23.6k だったので、
+# 60000 はほぼ発動しない上限だった = コスト削減効果はほとんど無い。
+# ここを中央値より下に下げると大半の論文で Discussion が削られ、
+# 「問題点・批判的吟味」の材料が失われるため、品質を落とさない範囲の
+# セーフティネットとして 30000 に置く(長大な総説・多施設報告のみ発動)。
+# 発動時は先頭打ち切りではなくセクション重要度順に詰める
+# (pubmed._trim_sections を参照)。
+FULLTEXT_MAX_CHARS = 30000
+
+# 要約キャッシュ(API二重課金の防止)
+# Notion書き込みが失敗した論文は翌回の実行で再度APIに投げていたため、
+# 同じ論文の要約に二度課金していた。要約結果をここに保存して再利用する。
+SUMMARY_CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache", "summaries")
+USE_SUMMARY_CACHE = True
+
+# abstractがこの長さ未満の文献はAPIに投げずにスキップする。
+# E-Videos・research letter・学会抄録など、要約不能なものに課金していた。
+MIN_ABSTRACT_CHARS = 300
 
 # Importance判定にAIを使うか
 USE_AI_IMPORTANCE_JUDGMENT = True

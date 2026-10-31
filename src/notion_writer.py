@@ -56,15 +56,42 @@ def is_pmid_exists(pmid: str) -> bool:
 
 
 def get_existing_pmids() -> Optional[Set[str]]:
-    """DB内の全PMIDを一括取得してセットで返す。
+    """DB内の全PMIDを返す(get_existing_keys への薄いラッパー)。
 
     これをループ前に1度だけ呼び、候補から既存論文を事前除外することで、
     「スコア上位の高IF論文(全て登録済み)を毎回100件走査して打ち切り」
     という停止問題を回避する。
-    取得に失敗した場合は None を返し、呼び出し側で従来の逐次チェックに
-    フォールバックする。
+    """
+    pmids, _ = get_existing_keys()
+    return pmids
+
+
+def _normalize_doi(doi: str) -> str:
+    """DOI を比較用に正規化する(前置URL・大文字小文字・末尾空白を除去)"""
+    d = (doi or "").strip().lower()
+    for prefix in ("https://doi.org/", "http://doi.org/", "doi:"):
+        if d.startswith(prefix):
+            d = d[len(prefix):]
+    return d.strip().rstrip(".")
+
+
+# main から参照する公開名(DOI重複排除に使う)
+normalize_doi = _normalize_doi
+
+
+def get_existing_keys() -> tuple:
+    """DB内の全PMIDと全DOI(正規化済み)を1回のスキャンで集める。
+
+    PMIDだけで重複排除していると、ahead-of-print版と確定版が別PMIDを
+    持つため同じ論文が二重登録され、要約APIにも二重課金していた。
+    DOIは版が変わっても同一なので、第2の鍵として併用する。
+    PMID/DOI を別々にスキャンすると全ページを2周することになるため、
+    ここで1周して両方を返す。
+    取得失敗時は (None, None) を返し、呼び出し側は逐次チェックに戻る。
+    戻り値: (pmids:set|None, dois:set|None)
     """
     pmids: Set[str] = set()
+    dois: Set[str] = set()
     start_cursor: Optional[str] = None
 
     while True:
@@ -78,27 +105,28 @@ def get_existing_pmids() -> Optional[Set[str]]:
             json=payload,
             timeout=30,
         )
-
         if resp.status_code != 200:
-            print(f"[Notion] get_existing_pmids failed (status {resp.status_code}): {resp.text[:200]}")
-            return None
+            print(f"[Notion] get_existing_keys failed (status {resp.status_code}): {resp.text[:200]}")
+            return None, None
 
         data = resp.json()
         for page in data.get("results", []):
-            rich = page.get("properties", {}).get("PMID", {}).get("rich_text", [])
-            text = "".join(r.get("plain_text", "") for r in rich).strip()
-            if text:
-                pmids.add(text)
+            props = page.get("properties", {})
+            rich = props.get("PMID", {}).get("rich_text", [])
+            pmid = "".join(r.get("plain_text", "") for r in rich).strip()
+            if pmid:
+                pmids.add(pmid)
+            norm = _normalize_doi(props.get("DOI", {}).get("url") or "")
+            if norm:
+                dois.add(norm)
 
         if not data.get("has_more"):
             break
         start_cursor = data.get("next_cursor")
         time.sleep(0.4)  # レート制限対策(3req/sec)
 
-    print(f"[Notion] Loaded {len(pmids)} existing PMIDs from DB")
-    return pmids
-
-
+    print(f"[Notion] Loaded {len(pmids)} existing PMIDs / {len(dois)} DOIs from DB")
+    return pmids, dois
 def create_paper_page(paper: Dict, summary: Dict) -> Optional[str]:
     """統合論文DBに新規ページを作成。成功時はpage URLを返す"""
     properties = _build_properties(paper, summary)

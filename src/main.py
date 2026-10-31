@@ -60,13 +60,21 @@ def main():
     # Step 3.5: 既存PMIDを一括取得し、候補から事前除外する。
     # これをしないと、スコア上位を占める高IF誌の論文(すべて登録済み)を
     # 毎回 target×10 件走査して打ち切り、新着の中堅誌論文に到達できない。
-    existing_pmids = notion_writer.get_existing_pmids()
+    existing_pmids, existing_dois = notion_writer.get_existing_keys()
     use_preloaded = existing_pmids is not None
     if use_preloaded:
         before = len(ranked_papers)
-        ranked_papers = [p for p in ranked_papers if p["pmid"] not in existing_pmids]
-        print(f"[INFO] Excluded {before - len(ranked_papers)} already-posted papers up front, "
-              f"{len(ranked_papers)} new candidates remain\n")
+        # PMID だけでなく DOI でも除外する。
+        # ahead-of-print と確定版は PMID が別なので、DOI を見ないと
+        # 同じ論文を二重に登録し、要約APIにも二重に課金してしまう。
+        dois = existing_dois or set()
+        ranked_papers = [
+            p for p in ranked_papers
+            if p["pmid"] not in existing_pmids
+            and notion_writer.normalize_doi(p.get("doi", "")) not in dois
+        ]
+        print(f"[INFO] Excluded {before - len(ranked_papers)} already-posted papers up front "
+              f"(PMID+DOI), {len(ranked_papers)} new candidates remain\n")
         if not ranked_papers:
             print("[INFO] No new papers to add. Exit.")
             return
@@ -74,7 +82,8 @@ def main():
         print("[WARN] Could not preload existing PMIDs, falling back to per-paper dedup\n")
 
     # Step 4-6: スコア上位から順に新規論文を探し、PAPERS_PER_RUN_MAX件追加するまで継続
-    stats = {"added": 0, "duplicates": 0, "errors": 0, "skipped_low_importance": 0, "examined": 0}
+    stats = {"added": 0, "duplicates": 0, "errors": 0, "skipped_low_importance": 0,
+             "skipped_no_abstract": 0, "examined": 0}
     target = config.PAPERS_PER_RUN_MAX
 
     for paper in ranked_papers:
@@ -91,6 +100,15 @@ def main():
         stats["examined"] += 1
         pmid = paper["pmid"]
         title_short = paper["title"][:60]
+
+        # abstract が実質無い文献(E-Videos・research letter・学会抄録など)は
+        # 要約しようがないのに API に課金していた。PMC全文も無ければ捨てる。
+        abstract = (paper.get("abstract") or "").strip()
+        if len(abstract) < config.MIN_ABSTRACT_CHARS and not paper.get("pmcid"):
+            print(f"[SKIP-NOABS] [{stats['examined']:>3}] PMID {pmid} "
+                  f"(abstract {len(abstract)} chars, no PMC): {title_short}")
+            stats["skipped_no_abstract"] += 1
+            continue
 
         try:
             # 重複チェック(事前除外できなかった場合のみ逐次チェックにフォールバック)
@@ -147,6 +165,7 @@ def main():
     print(f"  Added              : {stats['added']}")
     print(f"  Duplicates skipped : {stats['duplicates']}")
     print(f"  Low importance     : {stats['skipped_low_importance']}")
+    print(f"  No abstract (skip) : {stats['skipped_no_abstract']}")
     print(f"  Errors             : {stats['errors']}")
     print("=" * 60)
 

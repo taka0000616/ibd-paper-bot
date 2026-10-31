@@ -2,6 +2,7 @@
 Claude APIで論文の日本語要約とImportance判定を行う
 """
 import json
+import os
 import time
 
 import requests
@@ -89,6 +90,41 @@ SUMMARIZE_PROMPT_FULLTEXT = """あなたは消化器内科専門医(特にIBD臨
 """ + _OUTPUT_SPEC
 
 
+def _cache_path(pmid: str, has_full_text: bool) -> str:
+    """要約キャッシュのパス。全文ベースとabstractベースは別物なので区別する"""
+    suffix = "ft" if has_full_text else "ab"
+    return os.path.join(config.SUMMARY_CACHE_DIR, f"{pmid}_{suffix}.json")
+
+
+def _cache_load(pmid: str, has_full_text: bool) -> Optional[Dict]:
+    """保存済みの要約があれば返す。
+
+    Notion書き込みが失敗した論文は翌回の実行でも候補に残るため、
+    キャッシュが無いと同じ要約に二度課金していた。
+    """
+    if not config.USE_SUMMARY_CACHE:
+        return None
+    path = _cache_path(pmid, has_full_text)
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        print(f"  → cached summary reused ({os.path.basename(path)}), API call skipped")
+        return data
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _cache_save(pmid: str, has_full_text: bool, result: Dict) -> None:
+    if not config.USE_SUMMARY_CACHE:
+        return
+    try:
+        os.makedirs(config.SUMMARY_CACHE_DIR, exist_ok=True)
+        with open(_cache_path(pmid, has_full_text), "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False)
+    except OSError as e:  # noqa: BLE001
+        print(f"  [cache] save failed for PMID {pmid}: {e}")
+
+
 def _call_claude(prompt: str, max_tokens: int, pmid: str) -> Optional[Dict]:
     """Claude APIを呼び、JSONをパースして返す共通処理"""
     headers = {
@@ -143,7 +179,11 @@ def _call_claude(prompt: str, max_tokens: int, pmid: str) -> Optional[Dict]:
 
 def summarize_paper(paper: Dict) -> Optional[Dict]:
     """論文を要約してImportance判定する。全文があれば全文ベースで詳細に要約"""
-    has_full_text = paper.get("has_full_text") and paper.get("full_text")
+    has_full_text = bool(paper.get("has_full_text") and paper.get("full_text"))
+
+    cached = _cache_load(paper["pmid"], has_full_text)
+    if cached is not None:
+        return cached
 
     if has_full_text:
         truncated_note = "(※本文が長いため後半を一部省略)" if paper.get("full_text_truncated") else ""
@@ -174,4 +214,5 @@ def summarize_paper(paper: Dict) -> Optional[Dict]:
     result = _call_claude(prompt, max_tokens, paper["pmid"])
     if result is not None:
         result["_source"] = "fulltext" if has_full_text else "abstract"
+        _cache_save(paper["pmid"], has_full_text, result)
     return result

@@ -284,6 +284,79 @@ _SKIP_SECTION_TITLES = (
 )
 
 
+# セクションの重要度。要約に必要な順。数字が小さいほど優先して残す。
+# Results/Methods は数値とデザインの出所なので最優先、Discussion は解釈、
+# Introduction は背景(abstractと重複しがち)、その他は最後に削る。
+_SECTION_PRIORITY = (
+    (1, ("result", "finding", "outcome")),
+    (2, ("method", "material", "patients and", "study design", "statistic")),
+    (3, ("discussion", "limitation", "interpretation")),
+    (4, ("introduction", "background")),
+    (5, ("conclusion", "summary", "key message", "what is")),
+)
+
+
+def _section_priority(title: str) -> int:
+    """セクション見出しから重要度を返す(見出し不明は Discussion 相当に置く)"""
+    t = title.lower()
+    for rank, keys in _SECTION_PRIORITY:
+        if any(k in t for k in keys):
+            return rank
+    return 3
+
+
+# 予算超過時に縮めてよいセクションの上限文字数。
+# Introduction と Conclusions は abstract と内容が重複するため先に縮めるが、
+# 「背景・目的」の記述に既存研究のギャップが必要なので完全には捨てない。
+_SOFT_CAPS = {4: 4000, 5: 2000}
+
+_ELLIPSIS = " …[中略]"
+
+
+def _shorten(text: str, limit: int) -> str:
+    """limit 文字以内に収める(末尾の省略記号込みで超えないようにする)"""
+    if len(text) <= limit:
+        return text
+    body = text[: max(0, limit - len(_ELLIPSIS))]
+    return body.rsplit(" ", 1)[0] + _ELLIPSIS
+
+
+def _trim_sections(sections: List[tuple], budget: int) -> tuple:
+    """セクション群を budget 文字以内に収める。
+
+    先頭から単純に打ち切ると Results や Discussion が丸ごと落ちるため、
+    重要度の低いセクション(Introduction・Conclusion等)から先に削り、
+    それでも入らない場合は低優先セクションを部分的に縮める。
+    本文の順序は元のまま保つ。
+    戻り値: (本文, 削った箇所があるか)
+    """
+    total = sum(len(t) for _, t in sections)
+    if total <= budget:
+        return "\n\n".join(t for _, t in sections), False
+
+    # 重要度の高い順に予算を割り当てる
+    order = sorted(range(len(sections)), key=lambda i: (_section_priority(sections[i][0]), i))
+    keep = {}
+    remaining = budget
+    for i in order:
+        title, text = sections[i]
+        cap = _SOFT_CAPS.get(_section_priority(title))
+        if cap and len(text) > cap:
+            text = _shorten(text, cap)
+        sep = 2 if keep else 0  # "\n\n"
+        if remaining - sep <= 0:
+            continue
+        avail = remaining - sep
+        if len(text) <= avail:
+            keep[i] = text
+            remaining -= len(text) + sep
+        elif avail >= 800:  # 中途半端に短いと文脈が壊れるので800字以上のときだけ部分採用
+            keep[i] = _shorten(text, avail)
+            remaining = 0
+    body = "\n\n".join(keep[i] for i in sorted(keep))
+    return body, True
+
+
 def fetch_full_text(pmcid: str) -> Optional[Dict]:
     """PMCから本文を取得し、図表・引用文献を除いたプレーンテキストを返す。
 
@@ -308,7 +381,7 @@ def fetch_full_text(pmcid: str) -> Optional[Dict]:
     if body is None:
         return None
 
-    parts: List[str] = []
+    parts: List[tuple] = []  # (セクション見出し, 本文)
     for sec in body.findall("./sec") or [body]:
         title = (sec.findtext("title") or "").strip()
         if any(k in title.lower() for k in _SKIP_SECTION_TITLES):
@@ -324,14 +397,13 @@ def fetch_full_text(pmcid: str) -> Optional[Dict]:
                 el.tail = tail
         text = " ".join(" ".join(sec.itertext()).split())
         if text:
-            parts.append(text)
+            parts.append((title, text))
 
-    full_text = "\n\n".join(parts)
-    if len(full_text) < 1000:  # 本文が実質的に無い(abstractのみ等)
+    if sum(len(t) for _, t in parts) < 1000:  # 本文が実質的に無い(abstractのみ等)
         return None
 
-    truncated = len(full_text) > config.FULLTEXT_MAX_CHARS
+    full_text, truncated = _trim_sections(parts, config.FULLTEXT_MAX_CHARS)
     return {
-        "full_text": full_text[:config.FULLTEXT_MAX_CHARS],
+        "full_text": full_text,
         "full_text_truncated": truncated,
     }
