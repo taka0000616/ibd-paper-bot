@@ -17,9 +17,9 @@ NOTION_VERSION = "2022-06-28"
 # ============================================================
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 CLAUDE_MODEL = "claude-sonnet-4-6"
-CLAUDE_MAX_TOKENS = 4000
+CLAUDE_MAX_TOKENS = 6000
 # 全文ベースで要約する場合はより長い出力を許可
-CLAUDE_MAX_TOKENS_FULLTEXT = 8000
+CLAUDE_MAX_TOKENS_FULLTEXT = 12000
 
 # ============================================================
 # PubMed設定
