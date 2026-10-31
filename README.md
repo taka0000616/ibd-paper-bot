@@ -17,7 +17,7 @@ PubMedから過去6ヶ月以内のIBD関連高品質論文を取得し、Claude 
 
 ## 実行スケジュール
 
-GitHub Actions cron で JST 7:00 / 12:00 / 18:00 / 22:00 の1日4回。
+GitHub Actions cron で JST 7:00 の1日1回。
 
 ## セットアップ
 
