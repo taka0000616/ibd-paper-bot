@@ -136,6 +136,10 @@ MIN_IF_THRESHOLD = 3.0
 # (= 全文要件でフィルタを緩和し、網羅性を上げる)
 FULLTEXT_RELAX_FILTER = True
 
+# 全文で足切りを免除する際の最低エビデンスレベル(filter.PUB_TYPE_SCORE基準)。
+# 3 = Observational Study 以上。0にすると低品質誌の論文まで流入する。
+FULLTEXT_RELAX_MIN_PUB_TYPE_SCORE = 3
+
 # 全文があるものだけを投稿対象にする(True)か、abstractのみの論文も許容する(False)
 # 「全文優先・abstract補完」方針 → False
 FULLTEXT_ONLY = False

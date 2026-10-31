@@ -121,7 +121,7 @@ def create_paper_page(paper: Dict, summary: Dict) -> Optional[str]:
 
 def _build_properties(paper: Dict, summary: Dict) -> Dict:
     """Notion DBプロパティを構築"""
-    from filter import map_pub_type_to_study_type, map_journal_to_select, infer_category
+    from filter import resolve_study_type, map_journal_to_select, infer_category
 
     props = {
         "Title": {
@@ -146,7 +146,9 @@ def _build_properties(paper: Dict, summary: Dict) -> Dict:
         },
         "Importance": {"select": {"name": summary.get("importance", "★")}},
         "Journal": {"select": {"name": map_journal_to_select(paper["journal_iso"])}},
-        "Study Type": {"select": {"name": map_pub_type_to_study_type(paper["pub_types"])}},
+        # AI要約がデザインを判定していればそれを採用(Publication Typeは
+        # 単群試験にも "Clinical Trial" を付けるため当てにならない)
+        "Study Type": {"select": {"name": resolve_study_type(paper, summary)}},
         "Category": {
             "multi_select": [{"name": c} for c in infer_category(paper)],
         },
@@ -198,10 +200,7 @@ def _build_page_content(paper: Dict, summary: Dict) -> List[Dict]:
         "type": "callout",
         "callout": {
             "icon": {"emoji": "⭐" if importance == "★★★" else "📌"},
-            "rich_text": [{
-                "type": "text",
-                "text": {"content": f"Importance: {importance}\n{reason}"},
-            }],
+            "rich_text": _rich_text(f"Importance: {importance}\n{reason}"),
             "color": "yellow_background" if importance == "★★★" else "gray_background",
         },
     })
@@ -214,10 +213,7 @@ def _build_page_content(paper: Dict, summary: Dict) -> List[Dict]:
             "type": "callout",
             "callout": {
                 "icon": {"emoji": "💡"},
-                "rich_text": [{
-                    "type": "text",
-                    "text": {"content": ai_summary_text},
-                }],
+                "rich_text": _rich_text(ai_summary_text),
                 "color": "blue_background",
             },
         })
@@ -242,19 +238,34 @@ def _build_page_content(paper: Dict, summary: Dict) -> List[Dict]:
             },
         })
 
-    # 元論文へのリンク
+    # 元論文へのリンク(PMC全文があれば併記)
+    link_rt: List[Dict] = [
+        {"type": "text", "text": {"content": "🔗 "}},
+        {"type": "text", "text": {"content": "PubMed", "link": {"url": paper["pubmed_url"]}}},
+    ]
+    if paper.get("pmc_url"):
+        link_rt.append({"type": "text", "text": {"content": " ・ "}})
+        link_rt.append({
+            "type": "text",
+            "text": {"content": "PMC全文", "link": {"url": paper["pmc_url"]}},
+        })
+    if paper.get("doi"):
+        link_rt.append({"type": "text", "text": {"content": " ・ "}})
+        link_rt.append({
+            "type": "text",
+            "text": {"content": "DOI", "link": {"url": f"https://doi.org/{paper['doi']}"}},
+        })
+    # 要約が全文ベースかabstractベースかを明示(要約の厚みの違いの根拠になる)
+    src = summary.get("_source")
+    if src:
+        label = "全文ベース要約" if src == "fulltext" else "abstractベース要約"
+        if src == "fulltext" and paper.get("full_text_truncated"):
+            label += "(本文一部省略)"
+        link_rt.append({"type": "text", "text": {"content": f"  —  {label}"}})
     blocks.append({
         "object": "block",
         "type": "paragraph",
-        "paragraph": {
-            "rich_text": [
-                {"type": "text", "text": {"content": "🔗 "}},
-                {
-                    "type": "text",
-                    "text": {"content": "PubMed", "link": {"url": paper["pubmed_url"]}},
-                },
-            ],
-        },
+        "paragraph": {"rich_text": link_rt},
     })
 
     return blocks
@@ -286,10 +297,30 @@ def _render_key_findings_sections(key_findings_text: str) -> List[Dict]:
 
     blocks: List[Dict] = []
 
-    # セクション見出しを抽出。**xxx**: の形式を想定
-    section_pattern = re.compile(r"\*\*([^*]+?)\*\*\s*[:：]")
+    # セクション見出しを抽出。
+    # 行頭の **xxx**: / **xxx**：/ **xxx**(コロンなし) / ## xxx のいずれにも対応する。
+    # 以前はコロン必須だったため、モデルがコロンを付けずに出力すると
+    # セクション構造を検出できず、全文がフラットな段落として出ていた。
+    section_pattern = re.compile(
+        r"^[ \t]*(?:\*\*(?P<b>[^*\n]{1,40}?)\*\*|#{2,3}[ \t]+(?P<h>[^\n:：]{1,40}))"
+        r"[ \t]*[:：]?[ \t]*",
+        re.MULTILINE,
+    )
 
-    parts = section_pattern.split(key_findings_text)
+    def _split_sections(text: str):
+        """[preamble, heading, body, heading, body, ...] を返す"""
+        matches = list(section_pattern.finditer(text))
+        if not matches:
+            return [text]
+        out = [text[: matches[0].start()]]
+        for i, m in enumerate(matches):
+            heading = (m.group("b") or m.group("h") or "").strip()
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+            out.append(heading)
+            out.append(text[m.end():end])
+        return out
+
+    parts = _split_sections(key_findings_text)
 
     if len(parts) <= 1:
         # セクション構造が見つからない場合: そのまま全文を段落として出力

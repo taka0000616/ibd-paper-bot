@@ -2,6 +2,8 @@
 Claude APIで論文の日本語要約とImportance判定を行う
 """
 import json
+import time
+
 import requests
 from typing import Dict, Optional
 
@@ -10,6 +12,10 @@ import config
 
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 
+# API呼び出しのリトライ設定(一時的な混雑で論文を取り逃さないため)
+_MAX_API_RETRIES = 4
+_RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504, 529}
+
 
 # 出力スキーマ・Importance基準・注意は全文/abstract共通
 _OUTPUT_SPEC = """# 出力形式(必ずJSONのみ、コードブロックなし)
@@ -17,6 +23,7 @@ _OUTPUT_SPEC = """# 出力形式(必ずJSONのみ、コードブロックなし)
   "title_jp": "日本語タイトル(簡潔に、医学用語は適切に)",
   "key_findings": "{key_findings_spec}",
   "ai_summary": "『【日本語タイトル】要約本文』の形式。先頭に【】で囲んだタイトルの日本語訳を置き、続けて120字程度(目安100〜140字)の簡潔な要約を書く。要約は「どんな集団に・何をして・何が分かったか」を端的に凝縮した平易な日本語1文。Notion一覧で一目で内容が掴めるようにする",
+  "study_type": "RCT" | "Meta-analysis" | "Systematic Review" | "Cohort" | "Case-control" | "Cross-sectional" | "Case Series" | "Basic Research" | "Translational" | "Review" | "Guideline" | "Other" のうち、実際の研究デザインに最も合うもの1つ,
   "importance": "★★★" or "★★" or "★",
   "importance_reason": "なぜそのImportanceを付けたか(1文)",
   "relevance_tags": ["ASUC risk stratification" | "single-cell/spatial" | "refractory UC subtyping" | "biologic combo therapy" | "ML/AI in IBD" | "pharmacogenomics" | "その他" のうち該当するもののリスト、無ければ空配列]
@@ -26,6 +33,14 @@ _OUTPUT_SPEC = """# 出力形式(必ずJSONのみ、コードブロックなし)
 - ★★★: NEJM/Lancet/Nature級、または領域の診療を変えるpivotal trial、ガイドライン
 - ★★: GI top tier (Gastroenterology/Gut/Lancet GH等)、大規模RCT、重要なMeta-analysis
 - ★: Specialty journal、観察研究、研究デザインに限界あり
+
+# study_type の判定
+- PubMedのPublication Typeは当てにならない(単群試験にも "Clinical Trial" が付く)。
+  必ず本文/abstractの記述からデザインを判断すること
+- ランダム化割付が明示されていなければ "RCT" にしない。単群試験・非対照の
+  前向き試験は症例数に応じて "Cohort" または "Case Series"
+- ネットワークメタ解析は "Meta-analysis"、後ろ向き比較コホートは "Cohort"
+- 基礎実験主体なら "Basic Research"、臨床検体の分子解析なら "Translational"
 
 # 注意
 - 数値・統計値(HR, OR, p値, CI, n数)は正確に引用すること。Key Findingsの「結果」セクションでは特に丁寧に
@@ -87,24 +102,43 @@ def _call_claude(prompt: str, max_tokens: int, pmid: str) -> Optional[Dict]:
         "messages": [{"role": "user", "content": prompt}],
     }
     content = ""
-    try:
-        resp = requests.post(ANTHROPIC_URL, headers=headers, json=payload, timeout=180)
-        resp.raise_for_status()
-        data = resp.json()
-        content = data["content"][0]["text"].strip()
-        if content.startswith("```"):
-            content = content.split("```")[1]
-            if content.startswith("json"):
-                content = content[4:]
-            content = content.strip()
-        return json.loads(content)
-    except json.JSONDecodeError as e:
-        print(f"[Claude] JSON parse error for PMID {pmid}: {e}")
-        print(f"Raw content: {content[:500]}")
-        return None
-    except Exception as e:  # noqa: BLE001
-        print(f"[Claude] API error for PMID {pmid}: {e}")
-        return None
+    # 429(レート制限) / 5xx / overloaded は一時的なことが多いのでリトライする。
+    # 以前は1回で諦めていたため、API側の一時的な混雑でその論文を取り逃していた。
+    for attempt in range(1, _MAX_API_RETRIES + 1):
+        try:
+            resp = requests.post(ANTHROPIC_URL, headers=headers, json=payload, timeout=180)
+            if resp.status_code in _RETRYABLE_STATUS and attempt < _MAX_API_RETRIES:
+                wait = 2 ** attempt * 5  # 10, 20, 40 秒
+                print(f"[Claude] PMID {pmid}: status {resp.status_code}, "
+                      f"retry {attempt}/{_MAX_API_RETRIES - 1} in {wait}s")
+                time.sleep(wait)
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            content = data["content"][0]["text"].strip()
+            if content.startswith("```"):
+                content = content.split("```")[1]
+                if content.startswith("json"):
+                    content = content[4:]
+                content = content.strip()
+            return json.loads(content)
+        except json.JSONDecodeError as e:
+            print(f"[Claude] JSON parse error for PMID {pmid}: {e}")
+            print(f"Raw content: {content[:500]}")
+            return None
+        except requests.RequestException as e:
+            if attempt < _MAX_API_RETRIES:
+                wait = 2 ** attempt * 5
+                print(f"[Claude] PMID {pmid}: {e}; retry {attempt}/{_MAX_API_RETRIES - 1} "
+                      f"in {wait}s")
+                time.sleep(wait)
+                continue
+            print(f"[Claude] API error for PMID {pmid}: {e}")
+            return None
+        except Exception as e:  # noqa: BLE001
+            print(f"[Claude] API error for PMID {pmid}: {e}")
+            return None
+    return None
 
 
 def summarize_paper(paper: Dict) -> Optional[Dict]:

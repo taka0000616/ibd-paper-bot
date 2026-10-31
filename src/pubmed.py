@@ -22,25 +22,65 @@ def _build_params(**kwargs) -> dict:
     return params
 
 
+# esearchの1リクエストあたり上限(NCBI仕様)
+_ESEARCH_PAGE_MAX = 10000
+
+
 def search_recent_papers() -> List[str]:
-    """過去N日間に登録されたIBD関連論文のPMIDを取得"""
-    params = _build_params(
-        db="pubmed",
-        term=config.PUBMED_QUERY,
-        reldate=config.PUBMED_RELDATE_DAYS,
-        datetype="pdat",  # publication date
-        retmode="json",
-        retmax=config.PUBMED_RETMAX,  # 5年分を確実に取得(config集約)。sort=pub_dateなので小さいと最新分しか拾えない
-        sort="pub_date",
-    )
+    """過去N日間に登録されたIBD関連論文のPMIDを取得。
 
-    resp = requests.get(f"{BASE_URL}/esearch.fcgi", params=params, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
+    ヒット件数が PUBMED_RETMAX を超える場合は retstart でページングして
+    PUBMED_RETMAX 件まで取得する。以前は1リクエストのみだったため、
+    retmax を超えるヒットがあると「最新 retmax 件」で静かに打ち切られ、
+    期間を広げても古い論文に到達できなかった。
+    """
+    pmids: List[str] = []
+    total: Optional[int] = None
+    retstart = 0
 
-    pmids = data.get("esearchresult", {}).get("idlist", [])
-    print(f"[PubMed] Search returned {len(pmids)} PMIDs")
-    return pmids
+    while len(pmids) < config.PUBMED_RETMAX:
+        page_size = min(_ESEARCH_PAGE_MAX, config.PUBMED_RETMAX - len(pmids))
+        params = _build_params(
+            db="pubmed",
+            term=config.PUBMED_QUERY,
+            reldate=config.PUBMED_RELDATE_DAYS,
+            datetype="pdat",  # publication date
+            retmode="json",
+            retmax=page_size,
+            retstart=retstart,
+            sort="pub_date",
+        )
+
+        resp = requests.get(f"{BASE_URL}/esearch.fcgi", params=params, timeout=60)
+        resp.raise_for_status()
+        result = resp.json().get("esearchresult", {})
+
+        if total is None:
+            try:
+                total = int(result.get("count", 0))
+            except (TypeError, ValueError):
+                total = 0
+            print(f"[PubMed] Query matched {total} papers in PubMed")
+
+        page = result.get("idlist", [])
+        if not page:
+            break
+        pmids.extend(page)
+        retstart += len(page)
+        if retstart >= (total or 0):
+            break
+        time.sleep(0.4)  # NCBIレート制限対策
+
+    # 重複排除(ページング境界で重複しうる)しつつ順序は維持
+    seen = set()
+    unique = [p for p in pmids if not (p in seen or seen.add(p))]
+
+    print(f"[PubMed] Search returned {len(unique)} PMIDs")
+    if total and total > len(unique):
+        print(f"[PubMed] WARN: {total - len(unique)} papers beyond PUBMED_RETMAX "
+              f"({config.PUBMED_RETMAX}) were not retrieved. "
+              f"Raise PUBMED_RETMAX or narrow PUBMED_RELDATE_DAYS to cover them.")
+    return unique
 
 
 def fetch_paper_details(pmids: List[str], max_retries: int = 3) -> List[Dict]:
@@ -273,10 +313,15 @@ def fetch_full_text(pmcid: str) -> Optional[Dict]:
         title = (sec.findtext("title") or "").strip()
         if any(k in title.lower() for k in _SKIP_SECTION_TITLES):
             continue
-        # 図表・数式・引用番号は要約の妨げになるので除去
+        # 図表・数式・引用番号は要約の妨げになるので除去する。
+        # 注意: Element.clear() は tail(その要素の直後に続く本文)まで消すため、
+        # 行内引用 <xref> に使うと「引用の後ろの文章」が丸ごと失われる。
+        # tail を保持したまま中身だけを空にする。
         for tag in ("table-wrap", "fig", "disp-formula", "xref"):
             for el in sec.iter(tag):
+                tail = el.tail
                 el.clear()
+                el.tail = tail
         text = " ".join(" ".join(sec.itertext()).split())
         if text:
             parts.append(text)
