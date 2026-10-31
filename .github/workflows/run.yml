@@ -26,6 +26,18 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # ランナーは実行ごとに破棄されるため、cache/ を明示的に持ち越す。
+      # ここに入るのは (a) 要約キャッシュ (b) 未完了バッチのID。
+      # 持ち越せないと「バッチに課金したのにNotionへ書けていない」が起きる。
+      - name: Restore summary cache / pending batch state
+        id: botcache
+        uses: actions/cache/restore@v4
+        with:
+          path: cache
+          key: ibd-bot-state-${{ github.run_id }}
+          restore-keys: |
+            ibd-bot-state-
+
       - name: Run bot
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
@@ -34,3 +46,12 @@ jobs:
           PUBMED_EMAIL: ${{ secrets.PUBMED_EMAIL }}
           PUBMED_API_KEY: ${{ secrets.PUBMED_API_KEY }}
         run: python src/main.py
+
+      # 要約キャッシュと未完了バッチIDを保存する。
+      # bot が失敗した場合でも持ち越したいので always()。
+      - name: Save summary cache / pending batch state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: cache
+          key: ibd-bot-state-${{ github.run_id }}

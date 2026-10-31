@@ -90,13 +90,72 @@ SUMMARIZE_PROMPT_FULLTEXT = """あなたは消化器内科専門医(特にIBD臨
 """ + _OUTPUT_SPEC
 
 
+def parse_response(content: str, pmid: str) -> Optional[Dict]:
+    """モデルの出力テキストをJSONとして解釈する。
+
+    同期呼び出しとバッチ呼び出しで同じ処理が必要なので関数に切り出している。
+    コードブロックで囲まれて返ってくることがあるため剥がす。
+    """
+    content = (content or "").strip()
+    if content.startswith("```"):
+        parts = content.split("```")
+        if len(parts) > 1:
+            content = parts[1]
+        if content.startswith("json"):
+            content = content[4:]
+        content = content.strip()
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError as e:
+        print(f"[Claude] JSON parse error for PMID {pmid}: {e}")
+        print(f"Raw content: {content[:500]}")
+        return None
+
+
+def build_request(paper: Dict) -> Dict:
+    """論文1本からプロンプトと max_tokens を組み立てる(API呼び出しはしない)。
+
+    同期呼び出し(summarize_paper)とバッチ投入(batch.submit)の両方から使う。
+    戻り値: {"prompt": str, "max_tokens": int, "has_full_text": bool}
+    """
+    has_full_text = bool(paper.get("has_full_text") and paper.get("full_text"))
+
+    if has_full_text:
+        truncated_note = "(※本文が長いため一部を省略)" if paper.get("full_text_truncated") else ""
+        prompt = SUMMARIZE_PROMPT_FULLTEXT.format(
+            title=paper["title"],
+            journal=paper["journal_iso"],
+            if_score=paper.get("estimated_if", "?"),
+            pub_date=paper["pub_date"] or "unknown",
+            pub_types=", ".join(paper["pub_types"]),
+            abstract=paper["abstract"] or "(no abstract available)",
+            full_text=paper["full_text"],
+            truncated_note=truncated_note,
+            key_findings_spec=_KF_FULLTEXT,
+        )
+        max_tokens = config.CLAUDE_MAX_TOKENS_FULLTEXT
+    else:
+        prompt = SUMMARIZE_PROMPT_ABSTRACT.format(
+            title=paper["title"],
+            journal=paper["journal_iso"],
+            if_score=paper.get("estimated_if", "?"),
+            pub_date=paper["pub_date"] or "unknown",
+            pub_types=", ".join(paper["pub_types"]),
+            abstract=paper["abstract"] or "(no abstract available)",
+            key_findings_spec=_KF_ABSTRACT,
+        )
+        max_tokens = config.CLAUDE_MAX_TOKENS
+
+    return {"prompt": prompt, "max_tokens": max_tokens, "has_full_text": has_full_text}
+
+
 def _cache_path(pmid: str, has_full_text: bool) -> str:
     """要約キャッシュのパス。全文ベースとabstractベースは別物なので区別する"""
     suffix = "ft" if has_full_text else "ab"
     return os.path.join(config.SUMMARY_CACHE_DIR, f"{pmid}_{suffix}.json")
 
 
-def _cache_load(pmid: str, has_full_text: bool) -> Optional[Dict]:
+def cache_load(pmid: str, has_full_text: bool) -> Optional[Dict]:
     """保存済みの要約があれば返す。
 
     Notion書き込みが失敗した論文は翌回の実行でも候補に残るため、
@@ -114,7 +173,7 @@ def _cache_load(pmid: str, has_full_text: bool) -> Optional[Dict]:
         return None
 
 
-def _cache_save(pmid: str, has_full_text: bool, result: Dict) -> None:
+def cache_save(pmid: str, has_full_text: bool, result: Dict) -> None:
     if not config.USE_SUMMARY_CACHE:
         return
     try:
@@ -151,13 +210,8 @@ def _call_claude(prompt: str, max_tokens: int, pmid: str) -> Optional[Dict]:
                 continue
             resp.raise_for_status()
             data = resp.json()
-            content = data["content"][0]["text"].strip()
-            if content.startswith("```"):
-                content = content.split("```")[1]
-                if content.startswith("json"):
-                    content = content[4:]
-                content = content.strip()
-            return json.loads(content)
+            content = data["content"][0]["text"]
+            return parse_response(content, pmid)
         except json.JSONDecodeError as e:
             print(f"[Claude] JSON parse error for PMID {pmid}: {e}")
             print(f"Raw content: {content[:500]}")
@@ -178,41 +232,19 @@ def _call_claude(prompt: str, max_tokens: int, pmid: str) -> Optional[Dict]:
 
 
 def summarize_paper(paper: Dict) -> Optional[Dict]:
-    """論文を要約してImportance判定する。全文があれば全文ベースで詳細に要約"""
-    has_full_text = bool(paper.get("has_full_text") and paper.get("full_text"))
+    """論文を要約してImportance判定する(同期呼び出し)。
 
-    cached = _cache_load(paper["pmid"], has_full_text)
+    バッチAPIが使えない場合のフォールバック経路。
+    """
+    req = build_request(paper)
+    has_full_text = req["has_full_text"]
+
+    cached = cache_load(paper["pmid"], has_full_text)
     if cached is not None:
         return cached
 
-    if has_full_text:
-        truncated_note = "(※本文が長いため後半を一部省略)" if paper.get("full_text_truncated") else ""
-        prompt = SUMMARIZE_PROMPT_FULLTEXT.format(
-            title=paper["title"],
-            journal=paper["journal_iso"],
-            if_score=paper.get("estimated_if", "?"),
-            pub_date=paper["pub_date"] or "unknown",
-            pub_types=", ".join(paper["pub_types"]),
-            abstract=paper["abstract"] or "(no abstract available)",
-            full_text=paper["full_text"],
-            truncated_note=truncated_note,
-            key_findings_spec=_KF_FULLTEXT,
-        )
-        max_tokens = config.CLAUDE_MAX_TOKENS_FULLTEXT
-    else:
-        prompt = SUMMARIZE_PROMPT_ABSTRACT.format(
-            title=paper["title"],
-            journal=paper["journal_iso"],
-            if_score=paper.get("estimated_if", "?"),
-            pub_date=paper["pub_date"] or "unknown",
-            pub_types=", ".join(paper["pub_types"]),
-            abstract=paper["abstract"] or "(no abstract available)",
-            key_findings_spec=_KF_ABSTRACT,
-        )
-        max_tokens = config.CLAUDE_MAX_TOKENS
-
-    result = _call_claude(prompt, max_tokens, paper["pmid"])
+    result = _call_claude(req["prompt"], req["max_tokens"], paper["pmid"])
     if result is not None:
         result["_source"] = "fulltext" if has_full_text else "abstract"
-        _cache_save(paper["pmid"], has_full_text, result)
+        cache_save(paper["pmid"], has_full_text, result)
     return result

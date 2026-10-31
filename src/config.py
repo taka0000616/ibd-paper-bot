@@ -163,6 +163,16 @@ FULLTEXT_MAX_CHARS = 30000
 SUMMARY_CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache", "summaries")
 USE_SUMMARY_CACHE = True
 
+# Message Batches API を使うか。
+# 1日1回の cron で結果の即時性が不要なので、入出力トークンが一律50%になる
+# バッチを既定にする。使えない環境では自動的に同期呼び出しへ退避する。
+USE_BATCH_API = True
+# バッチの完了を待つ上限(秒)。超えたらバッチIDを保存して終了し、次回の実行で回収する
+BATCH_MAX_WAIT_SEC = 2400      # 40分
+BATCH_POLL_INTERVAL_SEC = 30
+# ★止まりでスキップされる分を見込んで、目標より多めにバッチへ投入する倍率
+BATCH_OVERSHOOT = 1.5
+
 # abstractがこの長さ未満の文献はAPIに投げずにスキップする。
 # E-Videos・research letter・学会抄録など、要約不能なものに課金していた。
 MIN_ABSTRACT_CHARS = 300
